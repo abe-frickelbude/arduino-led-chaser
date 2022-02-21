@@ -1,23 +1,30 @@
 #include <Arduino.h>
+#include "analog_input.h"
 
+// number of connected LEDs
 const uint8_t NUM_LEDS = 15;
 
 // Mapping of MCU pins to LED(0)...LED(n-1)
 const uint8_t LED_OUTPUTS[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
-// ADC input used for reading the delay time setting
-const uint8_t ADC_PIN = A7;
-const uint8_t ADC_PASSES = 100;
+/*
+ * - The flash duration is controlled by 10K pot on A6 
+ * - The chase delay is controlled by 10K pot on A7
+ * - min/max values are in milliseconds
+ */
+const AnalogInput CHASE_DELAY_INPUT = {
+  .adcPin = A7, .numPasses = 100, .minValue = 1, .maxValue = 1500, .reverse = true
+};
 
-// values are in milliseconds
-const uint16_t MIN_DELAY = 10;
-const uint16_t MAX_DELAY = 1000;
+const AnalogInput FLASH_TIME_INPUT = {
+   .adcPin = A6, .numPasses = 100, .minValue = 1, .maxValue = 250, .reverse = false
+};
 
 //  ------------------ state ----------------------
 
-uint8_t prevLedIndex = 0;
 uint8_t currentLedIndex = 0;
-uint16_t delayTime = 0;
+uint16_t chaseDelayTime = 0;
+uint16_t flashTime = 50;
 
 // ------------------------------------------------
 
@@ -30,36 +37,31 @@ void setup()
     digitalWrite(LED_OUTPUTS[i], LOW);
   }
 
+  // TODO: add interpolation here based on mode switch on pin 19
   // delay time calculation in setup() instead of in loop() fixes the delay to a stable, de-noised value,
   // and also vastly improves performance by not repeating float calculations in the main loop,
   // but it can no longer be adjusted "interactively" (i.e you need to reset the MCU every time after adjusting)
-
-  // read/accumulate
-  float adcValue = 0;
-  for (int i = 0; i < ADC_PASSES; i++)
-  {
-    adcValue += analogRead(ADC_PIN);
-  }
-  adcValue *= (1.0f / ADC_PASSES); // denoise
-  adcValue *= max((1.0f / 1023), 1e-4); // normalize to [0..1] and clamp to .0001 to avoid numerical instabilities
-  
-  // linearly interpolate (but reversing the usual interpolation is (1-t)*A + t*B) 
-  // to produce a final, linearly decreasing value from MAX_DELAY to MIN_DELAY as adcValue moves from [0...1]
-  delayTime = (uint16_t)(round((adcValue * MIN_DELAY) + (1.0f - adcValue)*MAX_DELAY));
 }
 
 void loop()
 {
-  digitalWrite(LED_OUTPUTS[prevLedIndex], LOW);
+
+  // read and interpolate control inputs
+  flashTime = interpolateAdcInput(FLASH_TIME_INPUT);
+  chaseDelayTime = interpolateAdcInput(CHASE_DELAY_INPUT);
+
+  // --------- flash current LED -----------
+
   digitalWrite(LED_OUTPUTS[currentLedIndex], HIGH);
+  delay(flashTime);
+  digitalWrite(LED_OUTPUTS[currentLedIndex], LOW);
 
-  prevLedIndex = currentLedIndex;
   currentLedIndex++;
-
   if (currentLedIndex == NUM_LEDS)
   {
-    prevLedIndex = NUM_LEDS - 1;
     currentLedIndex = 0;
   }
-  delay(delayTime);
+
+  // delay before switching to next LED
+  delay(chaseDelayTime);
 }
