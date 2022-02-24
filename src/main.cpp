@@ -1,6 +1,12 @@
+//#define LOG_VALUES_TO_SERIAL
+
 #include <Arduino.h>
 #include <FastAnalogRead.h>
-#include "ValueInterpolator.h"
+#include "TimingCalculator.h"
+
+#ifdef LOG_VALUES_TO_SERIAL
+#include <ArduinoLog.h>
+#endif
 
 // number of connected LEDs
 const uint8_t NUM_LEDS = 15;
@@ -9,28 +15,34 @@ const uint8_t NUM_LEDS = 15;
 const uint8_t LED_OUTPUTS[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
 /*
- * - The chase delay is controlled by 10K pot on A3
- * - The flash duration is controlled by 10K pot on A4
- * - min/max values are in milliseconds
+ * - The period (1/chase speed) is controlled by 10K pot on A3
+ * - The duty cycle (flash duration) is controlled by 10K pot on A4
+ *
+ *  The min / max period values are in milliseconds, duty cycle is expressed as a fraction of period, e.g. 0.3
  */
+FastAnalogRead ledScanPeriodInput;
+FastAnalogRead ledDutyCycleInput;
+TimingCalculator timingCalculator(15, 500, 0.035, 0.50);
 
-FastAnalogRead chaseDelayInput;
-FastAnalogRead flashDurationInput;
+//  ################################# State ###########################################
 
-ValueInterpolator chaseDelayInterpolator(1, 1000, true);
-ValueInterpolator flashDurationInterpolator(1, 200, false);
-
-//  ------------------ state ----------------------
+// blink/scan timer
+uint32_t startTime = 0L;
+uint32_t currentTime = 0L;
 
 uint8_t currentLedIndex = 0;
-uint16_t chaseDelayTime = 50;
-uint16_t flashDuration = 50;
+uint16_t ledScanPeriod = 1000;
+uint16_t ledDutyCycle = 250;
+bool ledActive = false; // optimization for avoiding redundant digitalWrite() calls
 
-// ------------------------------------------------
+// ####################################################################################
 
 void setup()
 {
-  // Serial.begin(9600);
+#ifdef LOG_VALUES_TO_SERIAL
+  Serial.begin(9600);
+  Log.begin(LOG_LEVEL_INFO, &Serial);
+#endif
 
   // initialize all LED pins as outputs and blank all LEDs
   for (uint8_t i = 0; i < NUM_LEDS; i++)
@@ -39,51 +51,73 @@ void setup()
     digitalWrite(LED_OUTPUTS[i], LOW);
   }
 
-  // No "fast ADC" here as this produces cross-talk between inputs for some reason
-  // as signal values increase
-  chaseDelayInput.enableEdgeSnap();
-  flashDurationInput.enableEdgeSnap();
+  // initialize ADC inputs on A3 and A4
+  // Note: no "fast ADC" option here as this produces cross-talk between
+  // inputs for some reason as signal values increase
+  ledScanPeriodInput.begin(A3, true);
+  ledDutyCycleInput.begin(A4, true);
 
-  chaseDelayInput.begin(A3, true);
-  flashDurationInput.begin(A4, true);
+  ledScanPeriodInput.enableEdgeSnap();
+  ledDutyCycleInput.enableEdgeSnap();
+
+  // sanity check - set initial control values from inputs
+  ledDutyCycleInput.update();
+  ledScanPeriodInput.update();
+  timingCalculator.update(ledScanPeriodInput.getValue(), ledDutyCycleInput.getValue());
+  ledScanPeriod = timingCalculator.getPeriod();
+  ledDutyCycle = timingCalculator.getDutyCycle();
+
+  // initialize timer
+  startTime = millis();
 }
 
 void loop()
 {
-  // read and interpolate control inputs
-  flashDurationInput.update();
-  chaseDelayInput.update();
+  // read ADC inputs
+  ledDutyCycleInput.update();
+  ledScanPeriodInput.update();
 
-  chaseDelayTime = chaseDelayInterpolator.interpolate(chaseDelayInput.getValue());
-  flashDuration = flashDurationInterpolator.interpolate(flashDurationInput.getValue());
+#ifdef LOG_VALUES_TO_SERIAL
+  const auto period = ledScanPeriodInput.getValue();
+  const auto dutyCycle = ledDutyCycleInput.getValue();
+  timingCalculator.update(period, dutyCycle);
 
-  // Serial.print("Flash time: ");
-  // Serial.print(flashDuration, DEC);
+  Log.info(F("Period input: %d, d.c.input: %d, period: %d ms, t_on: %d ms" CR),
+           period, dutyCycle, timingCalculator.getPeriod(), timingCalculator.getDutyCycle());
+  delay(20);
+#else
 
-  // Serial.print("\tChase time: ");
-  // Serial.print(chaseDelayTime, DEC);
-
-  // Serial.print("\tft: ");
-  // Serial.print(ft, DEC);
-
-  // Serial.print("\tcdt: ");
-  // Serial.print(cdt, DEC);
-
-  // Serial.print("\n");
-  // delay(20);
-
-  // --------- flash current LED -----------
-
-  digitalWrite(LED_OUTPUTS[currentLedIndex], HIGH);
-  delay(flashDuration);
-  digitalWrite(LED_OUTPUTS[currentLedIndex], LOW);
-
-  currentLedIndex++;
-  if (currentLedIndex == NUM_LEDS)
+  currentTime = millis();
+  if (currentTime - startTime < ledDutyCycle && !ledActive)
   {
-    currentLedIndex = 0;
+    // turn on current LED
+    digitalWrite(LED_OUTPUTS[currentLedIndex], HIGH);
+    ledActive = true;
   }
 
-  // delay before switching to next LED
-  delay(chaseDelayTime);
+  if (currentTime - startTime >= ledDutyCycle && ledActive)
+  {
+    // t_on exceeded, turn off current LED
+    digitalWrite(LED_OUTPUTS[currentLedIndex], LOW);
+    ledActive = false;
+  }
+
+  // advance to next LED
+  if (currentTime - startTime >= ledScanPeriod)
+  {
+    currentLedIndex++;
+    if (currentLedIndex == NUM_LEDS)
+      currentLedIndex = 0;   // cycle back to first LED
+    startTime = currentTime; // reset timer
+  }
+
+  // update inputs, but save some performance - don't run calculations if inputs didn't change
+  if (ledScanPeriodInput.hasChanged() || ledDutyCycleInput.hasChanged())
+  {
+    timingCalculator.update(ledScanPeriodInput.getValue(), ledDutyCycleInput.getValue());
+    ledScanPeriod = timingCalculator.getPeriod();
+    ledDutyCycle = timingCalculator.getDutyCycle();
+  }
+
+#endif
 }
