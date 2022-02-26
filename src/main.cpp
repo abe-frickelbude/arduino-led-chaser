@@ -1,5 +1,6 @@
 //#define LOG_VALUES_TO_SERIAL
 
+#include <avr/wdt.h>
 #include <Arduino.h>
 #include <FastAnalogRead.h>
 #include "TimingCalculator.h"
@@ -12,6 +13,7 @@
 const uint8_t NUM_LEDS = 15;
 
 // Mapping of MCU pins to LED(0)...LED(n-1)
+// currently [D2..D16]
 const uint8_t LED_OUTPUTS[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
 /*
@@ -22,7 +24,7 @@ const uint8_t LED_OUTPUTS[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 1
  */
 FastAnalogRead ledScanPeriodInput;
 FastAnalogRead ledDutyCycleInput;
-TimingCalculator timingCalculator(15, 500, 0.035, 0.50);
+TimingCalculator timingCalculator(10, 500, 0.035, 0.50);
 
 //  ################################# State ###########################################
 
@@ -67,12 +69,18 @@ void setup()
   ledScanPeriod = timingCalculator.getPeriod();
   ledDutyCycle = timingCalculator.getDutyCycle();
 
+  // enable MCU watchdog with a 2 sec interval
+  wdt_enable(WDTO_2S);
+  wdt_reset();
+
   // initialize timer
   startTime = millis();
 }
 
 void loop()
 {
+  wdt_reset(); // reset MCU watchdog
+
   // read ADC inputs
   ledDutyCycleInput.update();
   ledScanPeriodInput.update();

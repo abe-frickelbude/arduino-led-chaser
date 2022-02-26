@@ -10,6 +10,8 @@ A simple configurable LED chaser based on the Arduino Nano platform
 * Basically limited by the number of I/O pins on the Nano minus the `PD0/PD1` and two other pins for ADC inputs
 * VSCode PlatformIO configuration files are included
 * All code is documented where possible
+* The software utilizes the MCU watchdog with an interval of 2s to automatically reset the MCU in case of
+  any unexpected hangups or crashes.
 
 ## Electrical notes
 
